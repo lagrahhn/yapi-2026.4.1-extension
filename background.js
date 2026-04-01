@@ -413,11 +413,14 @@ function sendAjax(req) {
   })();
 }
 
-chrome.runtime.onConnect.addListener(function (connect) {
-  if (connect.name !== 'request') return;
-  connect.onMessage.addListener(function (msg) {
+chrome.runtime.onConnect.addListener(function (port) {
+  if (port.name !== 'request') return;
+  port.onMessage.addListener(function (msg) {
     sendAjax(msg.req).then(function (res) {
-      connect.postMessage({ id: msg.id, res: res });
+      port.postMessage({ id: msg.id, res: res });
+      if (chrome.runtime.lastError) {
+        void chrome.runtime.lastError.message;
+      }
     });
   });
 });

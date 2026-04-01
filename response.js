@@ -170,7 +170,102 @@ var unsafeHeader = [ 'Accept-Charset',
 'User-Agent',
 'Via' ];
 /*==============common end=================*/
-var connect = chrome.runtime.connect({ name: "request" });
+var requestPort = null;
+
+function consumeExtensionLastError() {
+    if (chrome.runtime.lastError) {
+        void chrome.runtime.lastError.message;
+    }
+}
+
+function onRequestPortMessage(msg) {
+    var id = msg.id;
+    var res = msg.res;
+    var ok = res.status === 200;
+    var fn = ok ? successFns[id] : errorFns[id];
+    if (typeof fn === 'function') {
+        fn(res);
+    }
+    delete successFns[id];
+    delete errorFns[id];
+}
+
+function bindRequestPort(port) {
+    port.onMessage.addListener(onRequestPortMessage);
+    port.onDisconnect.addListener(function () {
+        consumeExtensionLastError();
+        if (requestPort === port) {
+            requestPort = null;
+        }
+        failPendingRequests('Port disconnected');
+    });
+}
+
+function failPendingRequests(message) {
+    var ids = Object.keys(errorFns);
+    ids.forEach(function (id) {
+        var fn = errorFns[id];
+        if (typeof fn === 'function') {
+            fn({
+                status: 0,
+                statusText: 'port_disconnected',
+                body: message || 'Extension port disconnected'
+            });
+        }
+        delete successFns[id];
+        delete errorFns[id];
+    });
+}
+
+function getRequestPort() {
+    if (!requestPort) {
+        try {
+            requestPort = chrome.runtime.connect({ name: "request" });
+            bindRequestPort(requestPort);
+        } catch (e) {
+            consumeExtensionLastError();
+            requestPort = null;
+        }
+    }
+    return requestPort;
+}
+
+function safePostToBack(payload) {
+    var port = getRequestPort();
+    if (!port) {
+        return false;
+    }
+    try {
+        port.postMessage(payload);
+        if (chrome.runtime.lastError) {
+            consumeExtensionLastError();
+            requestPort = null;
+            return false;
+        }
+        return true;
+    } catch (e) {
+        consumeExtensionLastError();
+        requestPort = null;
+        return false;
+    }
+}
+
+window.addEventListener("pagehide", function (ev) {
+    if (!ev.persisted || !requestPort) {
+        return;
+    }
+    try {
+        requestPort.disconnect();
+    } catch (e) { /* ignore */ }
+    requestPort = null;
+    consumeExtensionLastError();
+});
+
+window.addEventListener("pageshow", function (ev) {
+    if (ev.persisted) {
+        requestPort = null;
+    }
+});
 
 function injectJs(path) {
     var s = document.createElement('script');
@@ -342,21 +437,26 @@ function sendAjaxByContent(req, successFn, errorFn) {
 function sendAjaxByBack(id, req, successFn, errorFn) {
     successFns[id] = successFn;
     errorFns[id] = errorFn;
-    connect.postMessage({
+    var payload = {
         id: id,
         req: req
-    });
-}
-
-connect.onMessage.addListener(function (msg) {
-    var id = msg.id;
-    var res = msg.res;
-    res.status === 200 ?
-        successFns[id](res) :
-        errorFns[id](res);
+    };
+    if (safePostToBack(payload)) {
+        return;
+    }
+    if (safePostToBack(payload)) {
+        return;
+    }
+    if (typeof errorFns[id] === 'function') {
+        errorFns[id]({
+            status: 0,
+            statusText: 'extension_context_invalidated',
+            body: 'Extension context invalidated, please refresh page and retry'
+        });
+    }
     delete successFns[id];
     delete errorFns[id];
-});
+}
 
 function checkFileRequest(req) {
     if (req.files && typeof req.files === 'object' && Object.keys(req.files).length > 0) {

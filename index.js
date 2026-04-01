@@ -171,6 +171,33 @@
         'Via'];
     /*==============common end=================*/
 
+    function pickHeader(headers, name) {
+        if (!headers || typeof headers !== 'object') return '';
+        var target = String(name || '').toLowerCase();
+        for (var key in headers) {
+            if (Object.prototype.hasOwnProperty.call(headers, key) && String(key).toLowerCase() === target) {
+                return headers[key];
+            }
+        }
+        return '';
+    }
+
+    function normalizeBody(body, headers) {
+        if (typeof body !== 'string') return body;
+        var text = body.trim();
+        if (!text) return body;
+        var contentType = String(pickHeader(headers, 'content-type') || '').toLowerCase();
+        var maybeJson = contentType.indexOf('application/json') > -1 || contentType.indexOf('+json') > -1;
+        if (!maybeJson && text[0] !== '{' && text[0] !== '[') {
+            return body;
+        }
+        try {
+            return JSON.parse(text);
+        } catch (e) {
+            return body;
+        }
+    }
+
 
     function createNode(tagName, attributes, parentNode) {
         options = attributes || {};
@@ -248,9 +275,9 @@
                                 var id = dom.getAttribute('_id');
                                 var res = data.res;
                                 if (res.status === 200) {
-                                    yRequestMap[id].success(res.body, res.header, data);
+                                    yRequestMap[id].success(normalizeBody(res.body, res.header), res.header, data);
                                 } else {
-                                    yRequestMap[id].error(res.statusText, res.header, data);
+                                    yRequestMap[id].error(res.body || res.statusText, res.header, data);
                                 }
                                 dom.parentNode.removeChild(dom);
                             } else {
