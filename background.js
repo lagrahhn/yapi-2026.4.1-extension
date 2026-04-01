@@ -203,7 +203,11 @@ function allocSessionRuleId() {
   return dnrRuleIdCounter++ % 0x7fffffff || 1;
 }
 
-function buildSessionRule(ruleId, seq, unsafeHeaderArr) {
+function escapeRegExp(text) {
+  return String(text).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function buildSessionRule(ruleId, seq, unsafeHeaderArr, reqUrl, reqMethod) {
   var requestHeaders = [];
   if (unsafeHeaderArr && unsafeHeaderArr.length) {
     unsafeHeaderArr.forEach(function (v) {
@@ -220,6 +224,18 @@ function buildSessionRule(ruleId, seq, unsafeHeaderArr) {
     { header: 'cross-request-seq', operation: 'remove' }
   );
 
+  var condition = {
+    tabIds: [TAB_ID_NONE]
+  };
+  if (reqMethod) {
+    condition.requestMethods = [String(reqMethod).toLowerCase()];
+  }
+  if (reqUrl) {
+    condition.regexFilter = '^' + escapeRegExp(String(reqUrl)) + '$';
+  } else {
+    condition.urlFilter = '*';
+  }
+
   return {
     id: ruleId,
     priority: 2,
@@ -227,16 +243,7 @@ function buildSessionRule(ruleId, seq, unsafeHeaderArr) {
       type: 'modifyHeaders',
       requestHeaders: requestHeaders
     },
-    condition: {
-      tabIds: [TAB_ID_NONE],
-      requestHeaders: [
-        {
-          header: 'cross-request-seq',
-          operation: 'equals',
-          value: seq
-        }
-      ]
-    }
+    condition: condition
   };
 }
 
@@ -335,7 +342,7 @@ function sendAjax(req) {
   fetchHeaders.set('cross-request-seq', seq);
 
   var sessionRuleId = allocSessionRuleId();
-  var rule = buildSessionRule(sessionRuleId, seq, unsafeHeaderArr);
+  var rule = buildSessionRule(sessionRuleId, seq, unsafeHeaderArr, url, method);
 
   var controller = new AbortController();
   var timedOut = false;
