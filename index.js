@@ -222,6 +222,10 @@
     var debugList;
     var debugModal;
     var debugModalBody;
+    var debugModalTree;
+    var debugModalRawBtn;
+    var debugModalTreeBtn;
+    var debugModalRawText = '';
     var debugBootstrapped = false;
     var MAX_DEBUG_ITEMS = 20;
 
@@ -248,7 +252,15 @@
             + '#cross-request-debug-modal .cr-modal-inner{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);width:min(1200px,92vw);height:min(84vh,900px);background:#0b1220;border:1px solid #374151;border-radius:10px;display:flex;flex-direction:column;}'
             + '#cross-request-debug-modal .cr-modal-head{display:flex;justify-content:space-between;align-items:center;padding:10px 12px;border-bottom:1px solid #374151;color:#93c5fd;}'
             + '#cross-request-debug-modal .cr-modal-btns button{margin-left:8px;background:#374151;color:#e5e7eb;border:0;border-radius:4px;padding:4px 9px;cursor:pointer;}'
-            + '#cross-request-debug-modal .cr-modal-pre{flex:1;margin:0;padding:12px;overflow:auto;white-space:pre-wrap;word-break:break-word;color:#e5e7eb;}';
+            + '#cross-request-debug-modal .cr-modal-pre{flex:1;margin:0;padding:12px;overflow:auto;white-space:pre-wrap;word-break:break-word;color:#e5e7eb;}'
+            + '#cross-request-debug-modal .cr-modal-tree{flex:1;margin:0;padding:12px;overflow:auto;color:#e5e7eb;display:none;}'
+            + '#cross-request-debug-modal details{margin-left:12px;}'
+            + '#cross-request-debug-modal summary{cursor:pointer;user-select:none;color:#93c5fd;}'
+            + '#cross-request-debug-modal .jt-k{color:#60a5fa;}'
+            + '#cross-request-debug-modal .jt-s{color:#f9a8d4;}'
+            + '#cross-request-debug-modal .jt-n{color:#fcd34d;}'
+            + '#cross-request-debug-modal .jt-b{color:#34d399;}'
+            + '#cross-request-debug-modal .jt-null{color:#9ca3af;}';
 
         debugPanel = createNode('div', { id: 'cross-request-debug' }, document.body);
         var head = createNode('div', { class: 'cr-head' }, debugPanel);
@@ -274,11 +286,24 @@
         var copyBtn = createNode('button', {}, modalBtns);
         copyBtn.innerText = 'Copy';
         copyBtn.onclick = function () {
-            if (!debugModalBody) return;
-            var text = debugModalBody.innerText || '';
+            var text = debugModalRawText || (debugModalBody ? debugModalBody.innerText : '');
             if (navigator.clipboard && navigator.clipboard.writeText) {
                 navigator.clipboard.writeText(text).catch(function () { });
             }
+        };
+        debugModalRawBtn = createNode('button', {}, modalBtns);
+        debugModalRawBtn.innerText = 'Raw';
+        debugModalRawBtn.onclick = function () {
+            if (!debugModalBody || !debugModalTree) return;
+            debugModalBody.style.display = 'block';
+            debugModalTree.style.display = 'none';
+        };
+        debugModalTreeBtn = createNode('button', {}, modalBtns);
+        debugModalTreeBtn.innerText = 'JSON Tree';
+        debugModalTreeBtn.onclick = function () {
+            if (!debugModalBody || !debugModalTree) return;
+            debugModalBody.style.display = 'none';
+            debugModalTree.style.display = 'block';
         };
         var closeBtn = createNode('button', {}, modalBtns);
         closeBtn.innerText = 'Close';
@@ -286,6 +311,7 @@
             debugModal.style.display = 'none';
         };
         debugModalBody = createNode('pre', { class: 'cr-modal-pre' }, modalInner);
+        debugModalTree = createNode('div', { class: 'cr-modal-tree' }, modalInner);
         debugModal.onclick = function (e) {
             if (e.target === debugModal) {
                 debugModal.style.display = 'none';
@@ -316,8 +342,10 @@
         expandBtn.innerText = 'Expand';
         expandBtn.onclick = function () {
             ensureDebugPanel();
-            if (!debugModal || !debugModalBody) return;
-            debugModalBody.innerText = info.body || '';
+            if (!debugModal || !debugModalBody || !debugModalTree) return;
+            debugModalRawText = info.body || '';
+            debugModalBody.innerText = debugModalRawText;
+            renderJsonTree(debugModalRawText);
             debugModal.style.display = 'block';
         };
         createNode('div', { class: 'cr-url' }, item).innerText = info.url || '';
@@ -327,6 +355,88 @@
         while (debugList.childNodes.length > MAX_DEBUG_ITEMS) {
             debugList.removeChild(debugList.lastChild);
         }
+    }
+
+    function tryParseJson(text) {
+        if (typeof text !== 'string') return null;
+        var s = text.trim();
+        if (!s) return null;
+        if (s[0] !== '{' && s[0] !== '[') return null;
+        try {
+            return JSON.parse(s);
+        } catch (e) {
+            return null;
+        }
+    }
+
+    function asLeaf(value) {
+        var span = document.createElement('span');
+        if (value === null) {
+            span.className = 'jt-null';
+            span.textContent = 'null';
+        } else if (typeof value === 'string') {
+            span.className = 'jt-s';
+            span.textContent = '"' + value + '"';
+        } else if (typeof value === 'number') {
+            span.className = 'jt-n';
+            span.textContent = String(value);
+        } else if (typeof value === 'boolean') {
+            span.className = 'jt-b';
+            span.textContent = String(value);
+        } else {
+            span.textContent = String(value);
+        }
+        return span;
+    }
+
+    function buildJsonNode(parent, key, value) {
+        var isArray = Array.isArray(value);
+        var isObject = value && typeof value === 'object';
+
+        if (!isObject) {
+            var line = createNode('div', {}, parent);
+            if (key !== null) {
+                var keyDom = createNode('span', { class: 'jt-k' }, line);
+                keyDom.textContent = key + ': ';
+            }
+            line.appendChild(asLeaf(value));
+            return;
+        }
+
+        var details = createNode('details', {}, parent);
+        if (key === null) {
+            details.open = true;
+        }
+        var summary = createNode('summary', {}, details);
+        var title = key === null ? (isArray ? 'Array' : 'Object') : key;
+        var count = isArray ? value.length : Object.keys(value).length;
+        summary.textContent = title + ' (' + count + ')';
+
+        if (isArray) {
+            value.forEach(function (item, idx) {
+                buildJsonNode(details, '[' + idx + ']', item);
+            });
+            return;
+        }
+        Object.keys(value).forEach(function (k) {
+            buildJsonNode(details, k, value[k]);
+        });
+    }
+
+    function renderJsonTree(rawText) {
+        if (!debugModalTree || !debugModalTreeBtn || !debugModalBody) return;
+        debugModalTree.innerHTML = '';
+        var parsed = tryParseJson(rawText);
+        if (parsed === null) {
+            debugModalTreeBtn.style.display = 'none';
+            debugModalBody.style.display = 'block';
+            debugModalTree.style.display = 'none';
+            return;
+        }
+        debugModalTreeBtn.style.display = 'inline-block';
+        buildJsonNode(debugModalTree, null, parsed);
+        debugModalBody.style.display = 'none';
+        debugModalTree.style.display = 'block';
     }
 
 
