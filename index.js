@@ -171,6 +171,32 @@
         'Via'];
     /*==============common end=================*/
 
+    function pickHeader(headers, name) {
+        if (!headers || typeof headers !== 'object') return '';
+        var target = String(name || '').toLowerCase();
+        for (var key in headers) {
+            if (!Object.prototype.hasOwnProperty.call(headers, key)) continue;
+            if (String(key).toLowerCase() === target) return headers[key];
+        }
+        return '';
+    }
+
+    function toStructuredBody(body, headers) {
+        if (typeof body !== 'string') return body;
+        var text = body.trim();
+        if (!text) return body;
+        var contentType = String(pickHeader(headers, 'content-type') || '').toLowerCase();
+        var maybeJson = contentType.indexOf('application/json') > -1 || contentType.indexOf('+json') > -1;
+        if (!maybeJson && text[0] !== '{' && text[0] !== '[') {
+            return body;
+        }
+        try {
+            return JSON.parse(text);
+        } catch (e) {
+            return body;
+        }
+    }
+
     function createNode(tagName, attributes, parentNode) {
         options = attributes || {};
         tagName = tagName || 'div';
@@ -192,6 +218,116 @@
     var yRequestMap = {};
     var id = 0;
     var interval;
+    var debugPanel;
+    var debugList;
+    var debugModal;
+    var debugModalBody;
+    var debugBootstrapped = false;
+    var MAX_DEBUG_ITEMS = 20;
+
+    function ensureDebugPanel() {
+        if (debugBootstrapped) return;
+        debugBootstrapped = true;
+
+        var style = createNode('style', {}, document.head || document.documentElement);
+        style.innerText = ''
+            + '#cross-request-debug{position:fixed;right:12px;bottom:12px;width:420px;max-height:60vh;z-index:2147483647;background:#111827;color:#e5e7eb;border:1px solid #374151;border-radius:8px;box-shadow:0 10px 25px rgba(0,0,0,.35);font-size:12px;font-family:Consolas,Menlo,monospace;overflow:hidden;}'
+            + '#cross-request-debug .cr-head{display:flex;align-items:center;justify-content:space-between;padding:8px 10px;background:#1f2937;border-bottom:1px solid #374151;}'
+            + '#cross-request-debug .cr-title{font-weight:600;color:#93c5fd;}'
+            + '#cross-request-debug .cr-btns button{margin-left:6px;background:#374151;color:#e5e7eb;border:0;border-radius:4px;padding:3px 7px;cursor:pointer;}'
+            + '#cross-request-debug .cr-list{max-height:calc(60vh - 40px);overflow:auto;padding:8px;}'
+            + '#cross-request-debug .cr-item{border:1px solid #374151;border-radius:6px;padding:8px;margin-bottom:8px;background:#0b1220;}'
+            + '#cross-request-debug .cr-meta{display:flex;justify-content:space-between;margin-bottom:6px;color:#93c5fd;}'
+            + '#cross-request-debug .cr-url{word-break:break-all;color:#d1d5db;}'
+            + '#cross-request-debug .cr-row{display:flex;justify-content:space-between;align-items:center;gap:8px;}'
+            + '#cross-request-debug .cr-row button{background:#1d4ed8;color:#fff;border:0;border-radius:4px;padding:3px 8px;cursor:pointer;}'
+            + '#cross-request-debug .cr-pre{margin-top:6px;white-space:pre-wrap;word-break:break-word;color:#9ca3af;max-height:180px;overflow:auto;}'
+            + '#cross-request-debug .ok{color:#34d399;}'
+            + '#cross-request-debug .bad{color:#fca5a5;}'
+            + '#cross-request-debug-modal{position:fixed;inset:0;background:rgba(0,0,0,.72);z-index:2147483647;display:none;}'
+            + '#cross-request-debug-modal .cr-modal-inner{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);width:min(1200px,92vw);height:min(84vh,900px);background:#0b1220;border:1px solid #374151;border-radius:10px;display:flex;flex-direction:column;}'
+            + '#cross-request-debug-modal .cr-modal-head{display:flex;justify-content:space-between;align-items:center;padding:10px 12px;border-bottom:1px solid #374151;color:#93c5fd;}'
+            + '#cross-request-debug-modal .cr-modal-btns button{margin-left:8px;background:#374151;color:#e5e7eb;border:0;border-radius:4px;padding:4px 9px;cursor:pointer;}'
+            + '#cross-request-debug-modal .cr-modal-pre{flex:1;margin:0;padding:12px;overflow:auto;white-space:pre-wrap;word-break:break-word;color:#e5e7eb;}';
+
+        debugPanel = createNode('div', { id: 'cross-request-debug' }, document.body);
+        var head = createNode('div', { class: 'cr-head' }, debugPanel);
+        createNode('div', { class: 'cr-title' }, head).innerText = 'crossRequest logs';
+        var btns = createNode('div', { class: 'cr-btns' }, head);
+        var clearBtn = createNode('button', {}, btns);
+        clearBtn.innerText = 'Clear';
+        clearBtn.onclick = function () {
+            debugList.innerHTML = '';
+        };
+        var hideBtn = createNode('button', {}, btns);
+        hideBtn.innerText = 'Hide';
+        hideBtn.onclick = function () {
+            debugPanel.style.display = 'none';
+        };
+        debugList = createNode('div', { class: 'cr-list' }, debugPanel);
+
+        debugModal = createNode('div', { id: 'cross-request-debug-modal' }, document.body);
+        var modalInner = createNode('div', { class: 'cr-modal-inner' }, debugModal);
+        var modalHead = createNode('div', { class: 'cr-modal-head' }, modalInner);
+        createNode('span', {}, modalHead).innerText = 'Request response (expanded)';
+        var modalBtns = createNode('div', { class: 'cr-modal-btns' }, modalHead);
+        var copyBtn = createNode('button', {}, modalBtns);
+        copyBtn.innerText = 'Copy';
+        copyBtn.onclick = function () {
+            if (!debugModalBody) return;
+            var text = debugModalBody.innerText || '';
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+                navigator.clipboard.writeText(text).catch(function () { });
+            }
+        };
+        var closeBtn = createNode('button', {}, modalBtns);
+        closeBtn.innerText = 'Close';
+        closeBtn.onclick = function () {
+            debugModal.style.display = 'none';
+        };
+        debugModalBody = createNode('pre', { class: 'cr-modal-pre' }, modalInner);
+        debugModal.onclick = function (e) {
+            if (e.target === debugModal) {
+                debugModal.style.display = 'none';
+            }
+        };
+
+        document.addEventListener('keydown', function (e) {
+            if (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === 'x') {
+                debugPanel.style.display = debugPanel.style.display === 'none' ? 'block' : 'none';
+            }
+            if (e.key === 'Escape' && debugModal && debugModal.style.display !== 'none') {
+                debugModal.style.display = 'none';
+            }
+        });
+    }
+
+    function appendDebugLog(info) {
+        ensureDebugPanel();
+        if (!debugList) return;
+
+        var item = createNode('div', { class: 'cr-item' }, debugList);
+        var row = createNode('div', { class: 'cr-row' }, item);
+        var meta = createNode('div', { class: 'cr-meta' }, row);
+        var status = createNode('span', { class: info.ok ? 'ok' : 'bad' }, meta);
+        status.innerText = info.method + ' ' + info.status + ' (' + info.time + 'ms)';
+        createNode('span', {}, meta).innerText = new Date().toLocaleTimeString();
+        var expandBtn = createNode('button', {}, row);
+        expandBtn.innerText = 'Expand';
+        expandBtn.onclick = function () {
+            ensureDebugPanel();
+            if (!debugModal || !debugModalBody) return;
+            debugModalBody.innerText = info.body || '';
+            debugModal.style.display = 'block';
+        };
+        createNode('div', { class: 'cr-url' }, item).innerText = info.url || '';
+        var pre = createNode('pre', { class: 'cr-pre' }, item);
+        pre.innerText = info.body;
+
+        while (debugList.childNodes.length > MAX_DEBUG_ITEMS) {
+            debugList.removeChild(debugList.lastChild);
+        }
+    }
 
 
     function run(req) {
@@ -247,8 +383,24 @@
                                 var id = dom.getAttribute('_id');
                                 var res = data.res;
                                 if (res.status === 200) {
-                                    yRequestMap[id].success(res.body, res.header, data);
+                                    appendDebugLog({
+                                        ok: true,
+                                        method: (data.req.method || 'GET').toUpperCase(),
+                                        status: res.status,
+                                        time: data.runTime || 0,
+                                        url: data.req.url,
+                                        body: typeof res.body === 'string' ? res.body : JSON.stringify(res.body, null, 2)
+                                    });
+                                    yRequestMap[id].success(toStructuredBody(res.body, res.header), res.header, data);
                                 } else {
+                                    appendDebugLog({
+                                        ok: false,
+                                        method: (data.req.method || 'GET').toUpperCase(),
+                                        status: res.status || 0,
+                                        time: data.runTime || 0,
+                                        url: data.req.url,
+                                        body: typeof res.body === 'string' ? res.body : JSON.stringify(res.body, null, 2)
+                                    });
                                     yRequestMap[id].error(res.body || res.statusText, res.header, data);
                                 }
                                 dom.parentNode.removeChild(dom);
